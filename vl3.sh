@@ -1,49 +1,39 @@
 #!/bin/bash
 
-# Cập nhật danh sách gói phần mềm (KHÔNG upgrade)
-apt update
+# Cập nhật hệ thống
+apt update && apt install -y curl unzip jq qrencode uuid-runtime
 
 # Định nghĩa biến
-XRAY_URL="https://dtdp.bio/wp-content/apk/Xray-linux-64.zip"
+XRAY_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
 INSTALL_DIR="/usr/local/xray"
 CONFIG_FILE="${INSTALL_DIR}/config.json"
 SERVICE_FILE="/etc/systemd/system/xray.service"
-CERT_DIR="/etc/xray"
 
-# Cài đặt các gói cần thiết
-apt install -y unzip curl jq qrencode uuid-runtime imagemagick socat
-
-# Kiểm tra xem Xray đã được cài đặt chưa
-if [[ -f "${INSTALL_DIR}/xray" ]]; then
-    echo "Xray đã được cài đặt. Bỏ qua bước cài đặt."
-else
-    echo "Cài đặt Xray..."
-    mkdir -p ${INSTALL_DIR}
-    curl -L ${XRAY_URL} -o xray.zip
-    unzip xray.zip -d ${INSTALL_DIR}
-    chmod +x ${INSTALL_DIR}/xray
-    rm xray.zip
-fi
+# Cài đặt Xray
+mkdir -p ${INSTALL_DIR}
+curl -L ${XRAY_URL} -o xray.zip
+unzip xray.zip -d ${INSTALL_DIR}
+chmod +x ${INSTALL_DIR}/xray
+rm xray.zip
 
 # Nhận địa chỉ IP máy chủ
 SERVER_IP=$(curl -s ifconfig.me)
 
-# Nhập User ID, Port, Domain, và tên người dùng
-read -p "Nhập User ID VLESS (UUID, nhấn Enter để tạo ngẫu nhiên): " UUID
-UUID=${UUID:-$(uuidgen)}
-PORT=443
-read -p "Nhập tên người dùng: " USERNAME
-read -p "Nhập domain của bạn (bắt buộc có SSL): " DOMAIN
+# Tạo UUID ngẫu nhiên
+UUID=$(uuidgen)
 
-# Cài đặt chứng chỉ SSL nếu chưa có
-mkdir -p ${CERT_DIR}
-if [[ ! -f "${CERT_DIR}/fullchain.pem" || ! -f "${CERT_DIR}/privkey.pem" ]]; then
-    echo "Cài đặt chứng chỉ SSL cho ${DOMAIN}..."
-    curl https://get.acme.sh | sh
-    ~/.acme.sh/acme.sh --issue -d ${DOMAIN} --standalone --key-file ${CERT_DIR}/privkey.pem --fullchain-file ${CERT_DIR}/fullchain.pem
-fi
+# Port ngẫu nhiên từ 10000 - 60000
+PORT=$((RANDOM % 50000 + 10000))
 
-# Tạo file cấu hình cho Xray (VLESS + XTLS)
+# Fake SNI (Tên miền giả lập)
+FAKE_SNI="www.cloudflare.com"
+
+# Tạo khóa Reality
+PRIVATE_KEY=$(${INSTALL_DIR}/xray x25519)
+PRIV_KEY=$(echo "$PRIVATE_KEY" | awk '{print $3}')
+PUB_KEY=$(echo "$PRIVATE_KEY" | awk '{print $6}')
+
+# Tạo file cấu hình Reality
 cat > ${CONFIG_FILE} <<EOF
 {
   "log": {
@@ -57,23 +47,23 @@ cat > ${CONFIG_FILE} <<EOF
         "clients": [
           {
             "id": "${UUID}",
-            "flow": "xtls-rprx-direct",
-            "level": 0
+            "flow": "xtls-rprx-vision"
           }
         ],
         "decryption": "none"
       },
       "streamSettings": {
         "network": "tcp",
-        "security": "xtls",
-        "tlsSettings": {
-          "serverName": "${DOMAIN}",
-          "certificates": [
-            {
-              "certificateFile": "${CERT_DIR}/fullchain.pem",
-              "keyFile": "${CERT_DIR}/privkey.pem"
-            }
-          ]
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${FAKE_SNI}:443",
+          "xver": 0,
+          "serverNames": [
+            "${FAKE_SNI}"
+          ],
+          "privateKey": "${PRIV_KEY}",
+          "shortIds": ["${UUID:0:8}"]
         }
       }
     }
@@ -87,15 +77,13 @@ cat > ${CONFIG_FILE} <<EOF
 }
 EOF
 
-# Mở cổng firewall chính xác
+# Mở cổng firewall
 ufw allow ${PORT}/tcp
 
-# Kiểm tra và tạo service systemd nếu chưa có
-if [[ ! -f "${SERVICE_FILE}" ]]; then
-    echo "Tạo service Xray..."
-    cat > ${SERVICE_FILE} <<EOF
+# Tạo service systemd
+cat > ${SERVICE_FILE} <<EOF
 [Unit]
-Description=Xray VLESS + XTLS Service
+Description=Xray VLESS + Reality
 After=network.target
 
 [Service]
@@ -107,33 +95,29 @@ LimitNOFILE=512000
 [Install]
 WantedBy=multi-user.target
 EOF
-fi
 
 # Khởi động Xray
 systemctl daemon-reload
 systemctl enable xray
 systemctl restart xray
 
-# ✅ Tạo URL VLESS + XTLS đúng chuẩn
-VLESS_URL="vless://${UUID}@${DOMAIN}:${PORT}?security=xtls&encryption=none&headerType=&type=tcp#${USERNAME}"
+# Tạo URL VLESS + Reality
+VLESS_URL="vless://${UUID}@${SERVER_IP}:${PORT}?security=reality&pbk=${PUB_KEY}&sid=${UUID:0:8}&fp=chrome&sni=${FAKE_SNI}&type=tcp&flow=xtls-rprx-vision#Reality"
 
-# ✅ Tạo mã QR nhỏ hơn (-s 5), với tên in đậm dưới QR
+# Tạo mã QR nhỏ (-s 5), với tên in đậm dưới QR
 QR_FILE="/tmp/vless_qr.png"
 qrencode -o ${QR_FILE} -s 5 -m 2 "${VLESS_URL}"
 
-# ✅ Thêm tên VLESS dưới QR
-convert ${QR_FILE} -gravity south -fill black -pointsize 20 -annotate +0+10 "**${USERNAME}**" ${QR_FILE}
+# Thêm tên dưới QR
+convert ${QR_FILE} -gravity south -fill black -pointsize 20 -annotate +0+10 "**Reality**" ${QR_FILE}
 
-# ✅ Hiển thị thông tin VLESS
+# Hiển thị thông tin
 echo "========================================"
-echo "      Cài đặt VLESS + XTLS hoàn tất!"
+echo "      Cài đặt VLESS + Reality hoàn tất!"
 echo "----------------------------------------"
-echo "Tên người dùng: ${USERNAME}"
 echo "VLESS URL: ${VLESS_URL}"
 echo "----------------------------------------"
 echo "Mã QR được lưu tại: ${QR_FILE}"
 echo "Quét mã QR dưới đây để sử dụng:"
 qrencode -t ANSIUTF8 "${VLESS_URL}"
-echo "----------------------------------------"
-echo "Tên người dùng: ${USERNAME}"
 echo "========================================"
