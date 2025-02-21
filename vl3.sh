@@ -4,17 +4,17 @@
 apt update && apt install -y curl unzip jq qrencode uuid-runtime imagemagick socat
 
 # Định nghĩa biến
-XRAY_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
-INSTALL_DIR="/usr/local/xray"
+SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-linux-amd64.tar.gz"
+INSTALL_DIR="/usr/local/sing-box"
 CONFIG_FILE="${INSTALL_DIR}/config.json"
-SERVICE_FILE="/etc/systemd/system/xray.service"
+SERVICE_FILE="/etc/systemd/system/sing-box.service"
 
-# Cài đặt Xray
+# Cài đặt Sing-box
 mkdir -p ${INSTALL_DIR}
-curl -L ${XRAY_URL} -o xray.zip
-unzip xray.zip -d ${INSTALL_DIR}
-chmod +x ${INSTALL_DIR}/xray
-rm xray.zip
+curl -L ${SINGBOX_URL} -o sing-box.tar.gz
+tar -xzf sing-box.tar.gz -C ${INSTALL_DIR}
+chmod +x ${INSTALL_DIR}/sing-box
+rm sing-box.tar.gz
 
 # Nhận địa chỉ IP máy chủ
 SERVER_IP=$(curl -s ifconfig.me)
@@ -32,50 +32,50 @@ PORT=$((RANDOM % 50000 + 10000))
 FAKE_SNI="www.amazon.com"
 
 # Tạo khóa Reality
-PRIVATE_KEY=$(${INSTALL_DIR}/xray x25519)
-PRIV_KEY=$(echo "$PRIVATE_KEY" | awk '{print $3}')
-PUB_KEY=$(echo "$PRIVATE_KEY" | awk '{print $6}')
+PRIVATE_KEY=$(${INSTALL_DIR}/sing-box generate reality-keypair)
+PRIV_KEY=$(echo "$PRIVATE_KEY" | grep "PrivateKey" | awk '{print $2}')
+PUB_KEY=$(echo "$PRIVATE_KEY" | grep "PublicKey" | awk '{print $2}')
 SHORT_ID=$(openssl rand -hex 8)  # Tạo Short ID ngẫu nhiên
 
-# Tạo file cấu hình Reality
+# Tạo file cấu hình Sing-box Reality
 cat > ${CONFIG_FILE} <<EOF
 {
   "log": {
-    "loglevel": "warning"
+    "level": "warn"
   },
   "inbounds": [
     {
-      "port": ${PORT},
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "${UUID}",
-            "flow": "xtls-rprx-vision"
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "reality",
-        "realitySettings": {
-          "show": true,
-          "dest": "${FAKE_SNI}:443",
-          "xver": 0,
-          "serverNames": [
-            "${FAKE_SNI}"
-          ],
-          "privateKey": "${PRIV_KEY}",
-          "shortIds": ["${SHORT_ID}"]
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "::",
+      "listen_port": ${PORT},
+      "users": [
+        {
+          "uuid": "${UUID}",
+          "flow": "xtls-rprx-vision"
         }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "${FAKE_SNI}",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "${FAKE_SNI}",
+            "server_port": 443
+          },
+          "private_key": "${PRIV_KEY}",
+          "short_id": ["${SHORT_ID}"]
+        }
+      },
+      "transport": {
+        "type": "tcp"
       }
     }
   ],
   "outbounds": [
     {
-      "protocol": "freedom",
-      "settings": {}
+      "type": "direct"
     }
   ]
 }
@@ -84,14 +84,14 @@ EOF
 # Mở cổng firewall chính xác
 ufw allow ${PORT}/tcp
 
-# Tạo service systemd
+# Tạo service systemd cho Sing-box
 cat > ${SERVICE_FILE} <<EOF
 [Unit]
-Description=Xray VLESS + Reality
+Description=Sing-box VLESS + Reality
 After=network.target
 
 [Service]
-ExecStart=${INSTALL_DIR}/xray run -config ${CONFIG_FILE}
+ExecStart=${INSTALL_DIR}/sing-box run -c ${CONFIG_FILE}
 Restart=always
 User=root
 LimitNOFILE=512000
@@ -100,10 +100,10 @@ LimitNOFILE=512000
 WantedBy=multi-user.target
 EOF
 
-# Khởi động Xray
+# Khởi động Sing-box
 systemctl daemon-reload
-systemctl enable xray
-systemctl restart xray
+systemctl enable sing-box
+systemctl restart sing-box
 
 # ✅ Tạo URL VLESS + Reality
 VLESS_URL="vless://${UUID}@${SERVER_IP}:${PORT}?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=${FAKE_SNI}&pbk=${PUB_KEY}&fp=chrome#${USERNAME}-${SERVER_IP}"
@@ -117,7 +117,7 @@ convert ${QR_FILE} -gravity south -fill black -pointsize 20 -annotate +0+10 "**R
 
 # ✅ Hiển thị thông tin
 echo "========================================"
-echo "      Cài đặt VLESS + Reality hoàn tất!"
+echo "      Cài đặt VLESS + Reality bằng Sing-box hoàn tất!"
 echo "----------------------------------------"
 echo "Tên người dùng: ${USERNAME}"
 echo "VLESS URL: ${VLESS_URL}"
