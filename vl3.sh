@@ -4,15 +4,15 @@
 apt update && apt install -y curl unzip jq qrencode uuid-runtime imagemagick socat
 
 # Định nghĩa biến
-SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-linux-amd64.tar.gz"
+SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/download/v1.11.3/sing-box-1.11.3-linux-amd64.tar.gz"
 INSTALL_DIR="/usr/local/sing-box"
 CONFIG_FILE="${INSTALL_DIR}/config.json"
 SERVICE_FILE="/etc/systemd/system/sing-box.service"
 
-# Cài đặt Sing-box
+# Cài đặt Sing-box v1.11.3
 mkdir -p ${INSTALL_DIR}
 curl -L ${SINGBOX_URL} -o sing-box.tar.gz
-tar -xzf sing-box.tar.gz -C ${INSTALL_DIR}
+tar -xzf sing-box.tar.gz -C ${INSTALL_DIR} --strip-components=1
 chmod +x ${INSTALL_DIR}/sing-box
 rm sing-box.tar.gz
 
@@ -37,7 +37,7 @@ PRIV_KEY=$(echo "$PRIVATE_KEY" | grep "PrivateKey" | awk '{print $2}')
 PUB_KEY=$(echo "$PRIVATE_KEY" | grep "PublicKey" | awk '{print $2}')
 SHORT_ID=$(openssl rand -hex 8)  # Tạo Short ID ngẫu nhiên
 
-# Tạo file cấu hình Sing-box Reality
+# Tạo file cấu hình Reality trên Sing-box
 cat > ${CONFIG_FILE} <<EOF
 {
   "log": {
@@ -117,7 +117,7 @@ convert ${QR_FILE} -gravity south -fill black -pointsize 20 -annotate +0+10 "**R
 
 # ✅ Hiển thị thông tin
 echo "========================================"
-echo "      Cài đặt VLESS + Reality bằng Sing-box hoàn tất!"
+echo "      Cài đặt VLESS + Reality trên Sing-box v1.11.3 hoàn tất!"
 echo "----------------------------------------"
 echo "Tên người dùng: ${USERNAME}"
 echo "VLESS URL: ${VLESS_URL}"
