@@ -1,128 +1,150 @@
 #!/bin/bash
 
-# Cập nhật hệ thống và cài đặt gói cần thiết
-apt update && apt install -y curl unzip jq qrencode uuid-runtime imagemagick socat
+# Cài đặt các gói cần thiết
+apt update
+apt install -y unzip curl uuid-runtime qrencode
 
-# Định nghĩa biến
-SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/download/v1.11.3/sing-box-1.11.3-linux-amd64.tar.gz"
-INSTALL_DIR="/usr/local/sing-box"
+# Biến
+XRAY_URL="https://dtdp.bio/wp-content/apk/Xray-linux-64.zip"
+INSTALL_DIR="/usr/local/xray"
 CONFIG_FILE="${INSTALL_DIR}/config.json"
-SERVICE_FILE="/etc/systemd/system/sing-box.service"
+SERVICE_FILE="/etc/systemd/system/xray.service"
+LOG_FILE="${INSTALL_DIR}/access.log"
+ERR_FILE="${INSTALL_DIR}/error.log"
 
-# Cài đặt Sing-box v1.11.3
-mkdir -p ${INSTALL_DIR}
-curl -L ${SINGBOX_URL} -o sing-box.tar.gz
-tar -xzf sing-box.tar.gz -C ${INSTALL_DIR} --strip-components=1
-chmod +x ${INSTALL_DIR}/sing-box
-rm sing-box.tar.gz
+# Tải và cài đặt Xray nếu chưa có
+if [[ ! -f "${INSTALL_DIR}/xray" ]]; then
+  mkdir -p ${INSTALL_DIR}
+  curl -L ${XRAY_URL} -o xray.zip
+  unzip xray.zip -d ${INSTALL_DIR}
+  chmod +x ${INSTALL_DIR}/xray
+  rm xray.zip
+fi
 
-# Nhận địa chỉ IP máy chủ
-SERVER_IP=$(curl -s ifconfig.me)
-
-# Người dùng nhập tên hiển thị
-read -p "Nhập tên người dùng: " USERNAME
-
-# Tạo UUID ngẫu nhiên
+# Sinh UUID và port
 UUID=$(uuidgen)
+PORT=443
 
-# Port ngẫu nhiên từ 10000 - 60000
-PORT=$((RANDOM % 50000 + 10000))
+# Nhập tên hiển thị (ps) cho cấu hình VLESS
+read -p "Nhập tên hiển thị cho cấu hình (ps): " PS_NAME
+PS_NAME=${PS_NAME:-"VLESS-Reality"}
 
-# Fake SNI (Tên miền giả lập)
-FAKE_SNI="www.amazon.com"
+# Đặt domain cố định cho Reality
+REALITY_DOMAIN="bing.cn"
 
-# Tạo khóa Reality
-PRIVATE_KEY=$(${INSTALL_DIR}/sing-box generate reality-keypair)
-PRIV_KEY=$(echo "$PRIVATE_KEY" | grep "PrivateKey" | awk '{print $2}')
-PUB_KEY=$(echo "$PRIVATE_KEY" | grep "PublicKey" | awk '{print $2}')
-SHORT_ID=$(openssl rand -hex 8)  # Tạo Short ID ngẫu nhiên
-
-# Tạo file cấu hình Reality trên Sing-box
+# Tạo file cấu hình Xray (VLESS Reality)
 cat > ${CONFIG_FILE} <<EOF
 {
   "log": {
-    "level": "warn"
+    "loglevel": "info",
+    "access": "${LOG_FILE}",
+    "error": "${ERR_FILE}"
   },
   "inbounds": [
     {
-      "type": "vless",
-      "tag": "vless-in",
-      "listen": "::",
-      "listen_port": ${PORT},
-      "users": [
-        {
-          "uuid": "${UUID}",
-          "flow": "xtls-rprx-vision"
-        }
-      ],
-      "tls": {
-        "enabled": true,
-        "server_name": "${FAKE_SNI}",
-        "reality": {
-          "enabled": true,
-          "handshake": {
-            "server": "${FAKE_SNI}",
-            "server_port": 443
-          },
-          "private_key": "${PRIV_KEY}",
-          "short_id": ["${SHORT_ID}"]
-        }
+      "port": ${PORT},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${UUID}",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
       },
-      "transport": {
-        "type": "tcp"
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "xver": 0,
+          "dest": "${REALITY_DOMAIN}:443",
+          "serverNames": ["${REALITY_DOMAIN}"],
+          "privateKey": "$(xray x25519)",
+          "shortIds": ["$(openssl rand -hex 8)"]
+        }
       }
     }
   ],
   "outbounds": [
     {
-      "type": "direct"
+      "protocol": "freedom"
     }
   ]
 }
 EOF
 
-# Mở cổng firewall chính xác
-ufw allow ${PORT}/tcp
-
-# Tạo service systemd cho Sing-box
+# Tạo systemd service
 cat > ${SERVICE_FILE} <<EOF
 [Unit]
-Description=Sing-box VLESS + Reality
-After=network.target
+Description=Xray VLESS Reality Service
+After=network.target nss-lookup.target
 
 [Service]
-ExecStart=${INSTALL_DIR}/sing-box run -c ${CONFIG_FILE}
-Restart=always
-User=root
-LimitNOFILE=512000
+ExecStart=${INSTALL_DIR}/xray run -config ${CONFIG_FILE}
+Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# Khởi động Sing-box
 systemctl daemon-reload
-systemctl enable sing-box
-systemctl restart sing-box
+systemctl enable xray
+systemctl restart xray
+sleep 2
 
-# ✅ Tạo URL VLESS + Reality
-VLESS_URL="vless://${UUID}@${SERVER_IP}:${PORT}?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=${FAKE_SNI}&pbk=${PUB_KEY}&fp=chrome#${USERNAME}-${SERVER_IP}"
+# Kiểm tra trạng thái Xray
+if systemctl is-active --quiet xray; then
+  echo "Xray đã khởi động thành công!"
+else
+  echo "Xray không khởi động được. Kiểm tra logs: journalctl -u xray -f"
+  systemctl status xray
+  exit 1
+fi
 
-# ✅ Tạo mã QR nhỏ (-s 5), với tên in đậm dưới QR
-QR_FILE="/tmp/vless_qr.png"
+# Lấy IP server
+SERVER_IP=$(curl -s ifconfig.me)
+
+# Mở port firewall (ufw và iptables)
+if command -v ufw >/dev/null 2>&1; then
+  ufw allow ${PORT}/tcp
+  ufw allow 22/tcp
+  ufw --force enable
+fi
+iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT
+
+# Lấy thông tin cấu hình từ file
+PRIVATE_KEY=$(grep -o '"privateKey": "[^"]*' ${CONFIG_FILE} | cut -d'"' -f4)
+SHORT_ID=$(grep -o '"shortIds": \["[^"]*' ${CONFIG_FILE} | cut -d'"' -f4)
+
+# In thông tin cấu hình cho client
+echo "==== VLESS Reality ===="
+echo "Address: $SERVER_IP"
+echo "Port: $PORT"
+echo "UUID: $UUID"
+echo "Flow: xtls-rprx-vision"
+echo "Network: tcp"
+echo "Security: reality"
+echo "Server Name: $REALITY_DOMAIN"
+echo "Private Key: $PRIVATE_KEY"
+echo "Short ID: $SHORT_ID"
+echo "============================"
+
+# Tạo cấu hình VLESS URL cho client
+VLESS_URL="vless://${UUID}@${SERVER_IP}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_DOMAIN}&fp=chrome&pbk=${PRIVATE_KEY}&sid=${SHORT_ID}&type=tcp#${PS_NAME}"
+echo "VLESS URL: $VLESS_URL"
+
+# Tạo mã QR code cho VLESS URL
+QR_FILE="/root/vless_reality_qr.png"
 qrencode -o ${QR_FILE} -s 5 -m 2 "${VLESS_URL}"
-
-# ✅ Thêm tên dưới QR
-convert ${QR_FILE} -gravity south -fill black -pointsize 20 -annotate +0+10 "**Reality - ${USERNAME}**" ${QR_FILE}
-
-# ✅ Hiển thị thông tin
-echo "========================================"
-echo "      Cài đặt VLESS + Reality trên Sing-box v1.11.3 hoàn tất!"
-echo "----------------------------------------"
-echo "Tên người dùng: ${USERNAME}"
-echo "VLESS URL: ${VLESS_URL}"
-echo "----------------------------------------"
-echo "Mã QR được lưu tại: ${QR_FILE}"
-echo "Quét mã QR dưới đây để sử dụng:"
+echo "Mã QR đã lưu tại: ${QR_FILE}"
+echo "Quét mã QR dưới đây để nhập nhanh vào app:"
 qrencode -t ANSIUTF8 "${VLESS_URL}"
-echo "========================================"
+
+echo "==== HƯỚNG DẪN SỬ DỤNG ===="
+echo "1. Dùng v2rayN, v2rayNG, Shadowrocket (network: tcp, security: reality)."
+echo "2. Quét mã QR hoặc nhập VLESS URL."
+echo "3. Nếu không kết nối được, kiểm tra firewall, log Xray, và outbound server."
+echo "4. Xem log truy cập: tail -f ${LOG_FILE}"
+echo "============================="
