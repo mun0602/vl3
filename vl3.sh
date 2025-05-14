@@ -1,35 +1,42 @@
 #!/bin/bash
 
+# Kiểm tra quyền root
+if [ "$(id -u)" -ne 0 ]; then
+   echo "Script này cần được chạy với quyền root" 
+   exit 1
+fi
+
+echo "Bắt đầu cài đặt Xray VLESS Reality..."
+
 # Cài đặt các gói cần thiết
 apt update
-apt install -y unzip curl uuid-runtime qrencode
+apt install -y unzip curl uuid-runtime qrencode socat
 
 # Biến
-XRAY_URL="https://dtdp.bio/wp-content/apk/Xray-linux-64.zip"
+XRAY_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
 INSTALL_DIR="/usr/local/xray"
 CONFIG_FILE="${INSTALL_DIR}/config.json"
 SERVICE_FILE="/etc/systemd/system/xray.service"
 LOG_FILE="${INSTALL_DIR}/access.log"
 ERR_FILE="${INSTALL_DIR}/error.log"
 
-# Tải và cài đặt Xray nếu chưa có
-if [[ ! -f "${INSTALL_DIR}/xray" ]]; then
-  mkdir -p ${INSTALL_DIR}
-  curl -L ${XRAY_URL} -o xray.zip
-  unzip xray.zip -d ${INSTALL_DIR}
-  chmod +x ${INSTALL_DIR}/xray
-  rm xray.zip
-  
-  # Thêm đường dẫn xray vào PATH
-  echo "export PATH=\$PATH:${INSTALL_DIR}" >> /etc/profile
-  source /etc/profile
-fi
+# Tạo thư mục cài đặt
+mkdir -p ${INSTALL_DIR}
 
-# Kiểm tra xray đã được cài đặt thành công
-if ! command -v xray &> /dev/null; then
-    echo "Lỗi: Không thể tìm thấy xray. Vui lòng kiểm tra lại quá trình cài đặt."
+# Tải và cài đặt Xray
+echo "Đang tải Xray-core từ GitHub..."
+curl -L ${XRAY_URL} -o xray.zip
+unzip -o xray.zip -d ${INSTALL_DIR}
+chmod +x ${INSTALL_DIR}/xray
+rm xray.zip
+
+# Kiểm tra xray đã cài đặt thành công
+if [ ! -f "${INSTALL_DIR}/xray" ]; then
+    echo "Lỗi: Không thể cài đặt xray. Vui lòng kiểm tra lại URL tải về."
     exit 1
 fi
+
+echo "Xray-core đã được cài đặt tại ${INSTALL_DIR}"
 
 # Sinh UUID và port
 UUID=$(uuidgen)
@@ -47,6 +54,15 @@ mkdir -p ${INSTALL_DIR}
 touch ${LOG_FILE} ${ERR_FILE}
 chmod 666 ${LOG_FILE} ${ERR_FILE}
 chown -R root:root ${INSTALL_DIR}
+
+# Tạo cặp khóa x25519 cho Reality
+echo "Đang tạo cặp khóa cho Reality..."
+KEYS=$(${INSTALL_DIR}/xray x25519)
+PRIVATE_KEY=$(echo "$KEYS" | grep "Private" | awk -F: '{print $2}' | tr -d ' ')
+PUBLIC_KEY=$(echo "$KEYS" | grep "Public" | awk -F: '{print $2}' | tr -d ' ')
+
+# Tạo short ID
+SHORT_ID=$(openssl rand -hex 8)
 
 # Tạo file cấu hình Xray (VLESS Reality)
 cat > ${CONFIG_FILE} <<EOF
@@ -77,8 +93,8 @@ cat > ${CONFIG_FILE} <<EOF
           "xver": 0,
           "dest": "${REALITY_DOMAIN}:443",
           "serverNames": ["${REALITY_DOMAIN}"],
-          "privateKey": "$(${INSTALL_DIR}/xray x25519)",
-          "shortIds": ["$(openssl rand -hex 8)"]
+          "privateKey": "${PRIVATE_KEY}",
+          "shortIds": ["${SHORT_ID}"]
         }
       }
     }
@@ -91,9 +107,13 @@ cat > ${CONFIG_FILE} <<EOF
 }
 EOF
 
+echo "Đã tạo file cấu hình Xray tại ${CONFIG_FILE}"
+
 # Kiểm tra cấu hình
+echo "Kiểm tra cấu hình Xray..."
 if ! ${INSTALL_DIR}/xray test -c ${CONFIG_FILE}; then
     echo "Lỗi: Cấu hình không hợp lệ. Kiểm tra lại file cấu hình."
+    cat ${CONFIG_FILE}
     exit 1
 fi
 
@@ -116,7 +136,10 @@ WorkingDirectory=${INSTALL_DIR}
 WantedBy=multi-user.target
 EOF
 
+echo "Đã tạo file service systemd tại ${SERVICE_FILE}"
+
 # Reload systemd và khởi động service
+echo "Khởi động service Xray..."
 systemctl daemon-reload
 systemctl enable xray
 systemctl restart xray
@@ -140,16 +163,13 @@ fi
 SERVER_IP=$(curl -s ifconfig.me)
 
 # Mở port firewall (ufw và iptables)
+echo "Mở port ${PORT} trên firewall..."
 if command -v ufw >/dev/null 2>&1; then
   ufw allow ${PORT}/tcp
   ufw allow 22/tcp
   ufw --force enable
 fi
 iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT
-
-# Lấy thông tin cấu hình từ file
-PRIVATE_KEY=$(grep -o '"privateKey": "[^"]*' ${CONFIG_FILE} | cut -d'"' -f4)
-SHORT_ID=$(grep -o '"shortIds": \["[^"]*' ${CONFIG_FILE} | cut -d'"' -f4)
 
 # In thông tin cấu hình cho client
 echo "==== VLESS Reality ===="
@@ -161,11 +181,12 @@ echo "Network: tcp"
 echo "Security: reality"
 echo "Server Name: $REALITY_DOMAIN"
 echo "Private Key: $PRIVATE_KEY"
+echo "Public Key: $PUBLIC_KEY"
 echo "Short ID: $SHORT_ID"
 echo "============================"
 
 # Tạo cấu hình VLESS URL cho client
-VLESS_URL="vless://${UUID}@${SERVER_IP}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_DOMAIN}&fp=chrome&pbk=${PRIVATE_KEY}&sid=${SHORT_ID}&type=tcp#${PS_NAME}"
+VLESS_URL="vless://${UUID}@${SERVER_IP}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_DOMAIN}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${PS_NAME}"
 echo "VLESS URL: $VLESS_URL"
 
 # Tạo mã QR code cho VLESS URL
