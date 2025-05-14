@@ -74,6 +74,7 @@ cat > ${CONFIG_FILE} <<EOF
   },
   "inbounds": [
     {
+      "listen": "0.0.0.0",
       "port": ${PORT},
       "protocol": "vless",
       "settings": {
@@ -90,8 +91,8 @@ cat > ${CONFIG_FILE} <<EOF
         "security": "reality",
         "realitySettings": {
           "show": false,
-          "xver": 0,
           "dest": "${REALITY_DOMAIN}:443",
+          "xver": 0,
           "serverNames": ["${REALITY_DOMAIN}"],
           "privateKey": "${PRIVATE_KEY}",
           "shortIds": ["${SHORT_ID}"]
@@ -195,6 +196,47 @@ qrencode -o ${QR_FILE} -s 5 -m 2 "${VLESS_URL}"
 echo "Mã QR đã lưu tại: ${QR_FILE}"
 echo "Quét mã QR dưới đây để nhập nhanh vào app:"
 qrencode -t ANSIUTF8 "${VLESS_URL}"
+
+# Tạo tệp cấu hình mẫu cho client
+CLIENT_CONFIG_FILE="/root/vless_client_config.json"
+cat > ${CLIENT_CONFIG_FILE} <<EOF
+{
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "${SERVER_IP}",
+            "port": ${PORT},
+            "users": [
+              {
+                "id": "${UUID}",
+                "flow": "xtls-rprx-vision",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "fingerprint": "chrome",
+          "serverName": "${REALITY_DOMAIN}",
+          "publicKey": "${PUBLIC_KEY}",
+          "shortId": "${SHORT_ID}",
+          "spiderX": "/"
+        }
+      }
+    }
+  ]
+}
+EOF
+
+echo "Đã tạo file cấu hình mẫu cho client tại ${CLIENT_CONFIG_FILE}"
 
 echo "==== HƯỚNG DẪN SỬ DỤNG ===="
 echo "1. Dùng v2rayN, v2rayNG, Shadowrocket (network: tcp, security: reality)."
