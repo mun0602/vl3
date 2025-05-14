@@ -19,6 +19,16 @@ if [[ ! -f "${INSTALL_DIR}/xray" ]]; then
   unzip xray.zip -d ${INSTALL_DIR}
   chmod +x ${INSTALL_DIR}/xray
   rm xray.zip
+  
+  # Thêm đường dẫn xray vào PATH
+  echo "export PATH=\$PATH:${INSTALL_DIR}" >> /etc/profile
+  source /etc/profile
+fi
+
+# Kiểm tra xray đã được cài đặt thành công
+if ! command -v xray &> /dev/null; then
+    echo "Lỗi: Không thể tìm thấy xray. Vui lòng kiểm tra lại quá trình cài đặt."
+    exit 1
 fi
 
 # Sinh UUID và port
@@ -61,7 +71,7 @@ cat > ${CONFIG_FILE} <<EOF
           "xver": 0,
           "dest": "${REALITY_DOMAIN}:443",
           "serverNames": ["${REALITY_DOMAIN}"],
-          "privateKey": "$(xray x25519)",
+          "privateKey": "$(${INSTALL_DIR}/xray x25519)",
           "shortIds": ["$(openssl rand -hex 8)"]
         }
       }
@@ -75,6 +85,10 @@ cat > ${CONFIG_FILE} <<EOF
 }
 EOF
 
+# Tạo thư mục log nếu chưa tồn tại
+touch ${LOG_FILE} ${ERR_FILE}
+chmod 666 ${LOG_FILE} ${ERR_FILE}
+
 # Tạo systemd service
 cat > ${SERVICE_FILE} <<EOF
 [Unit]
@@ -84,15 +98,19 @@ After=network.target nss-lookup.target
 [Service]
 ExecStart=${INSTALL_DIR}/xray run -config ${CONFIG_FILE}
 Restart=on-failure
+RestartSec=5s
+User=root
+Group=root
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
+# Reload systemd và khởi động service
 systemctl daemon-reload
 systemctl enable xray
 systemctl restart xray
-sleep 2
+sleep 5
 
 # Kiểm tra trạng thái Xray
 if systemctl is-active --quiet xray; then
