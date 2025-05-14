@@ -42,11 +42,17 @@ PS_NAME=${PS_NAME:-"VLESS-Reality"}
 # Đặt domain cố định cho Reality
 REALITY_DOMAIN="bing.cn"
 
+# Tạo thư mục và file log với quyền phù hợp
+mkdir -p ${INSTALL_DIR}
+touch ${LOG_FILE} ${ERR_FILE}
+chmod 666 ${LOG_FILE} ${ERR_FILE}
+chown -R root:root ${INSTALL_DIR}
+
 # Tạo file cấu hình Xray (VLESS Reality)
 cat > ${CONFIG_FILE} <<EOF
 {
   "log": {
-    "loglevel": "info",
+    "loglevel": "debug",
     "access": "${LOG_FILE}",
     "error": "${ERR_FILE}"
   },
@@ -85,9 +91,11 @@ cat > ${CONFIG_FILE} <<EOF
 }
 EOF
 
-# Tạo thư mục log nếu chưa tồn tại
-touch ${LOG_FILE} ${ERR_FILE}
-chmod 666 ${LOG_FILE} ${ERR_FILE}
+# Kiểm tra cấu hình
+if ! ${INSTALL_DIR}/xray test -c ${CONFIG_FILE}; then
+    echo "Lỗi: Cấu hình không hợp lệ. Kiểm tra lại file cấu hình."
+    exit 1
+fi
 
 # Tạo systemd service
 cat > ${SERVICE_FILE} <<EOF
@@ -96,11 +104,13 @@ Description=Xray VLESS Reality Service
 After=network.target nss-lookup.target
 
 [Service]
+Type=simple
 ExecStart=${INSTALL_DIR}/xray run -config ${CONFIG_FILE}
 Restart=on-failure
 RestartSec=5s
 User=root
 Group=root
+WorkingDirectory=${INSTALL_DIR}
 
 [Install]
 WantedBy=multi-user.target
@@ -116,8 +126,13 @@ sleep 5
 if systemctl is-active --quiet xray; then
   echo "Xray đã khởi động thành công!"
 else
-  echo "Xray không khởi động được. Kiểm tra logs: journalctl -u xray -f"
+  echo "Xray không khởi động được. Kiểm tra logs:"
+  echo "=== Systemd Status ==="
   systemctl status xray
+  echo "=== Xray Error Log ==="
+  cat ${ERR_FILE}
+  echo "=== Xray Access Log ==="
+  cat ${LOG_FILE}
   exit 1
 fi
 
